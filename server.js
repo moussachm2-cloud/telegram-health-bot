@@ -1,8 +1,11 @@
 // Telegram health-info bot — webhook server for Render (free web service).
 // Env: TELEGRAM_BOT_TOKEN, GEMINI_API_KEY, [GEMINI_MODEL], [WEBHOOK_SECRET]
+// Booking (optional): GOOGLE_SERVICE_ACCOUNT_JSON, GOOGLE_CALENDAR_ID, GOOGLE_SHEET_ID + see booking.js
 // Render sets RENDER_EXTERNAL_URL automatically; webhook is registered on boot.
 const http = require("http");
 const crypto = require("crypto");
+const google = require("./google");
+const { makeHandlers } = require("./booking");
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const GEMINI_KEY = process.env.GEMINI_API_KEY;
@@ -94,22 +97,31 @@ async function askGemini(chatId, userText) {
   return text;
 }
 
+const booking = makeHandlers(tg);
+
 async function handleUpdate(update) {
   if (seen.has(update.update_id)) return;
   seen.add(update.update_id);
   if (seen.size > 1000) seen.clear();
 
+  if (update.callback_query) return booking.onCallback(update.callback_query);
+
   const msg = update.message;
-  if (!msg || !msg.text) return;
+  if (!msg || (!msg.text && !msg.contact)) return;
   const chatId = msg.chat.id;
 
-  if (msg.text.startsWith("/start")) {
+  if (msg.text && msg.text.startsWith("/start")) {
     await tg("sendMessage", {
       chat_id: chatId,
-      text: "أهلاً! 👋 أنا بوت للأسئلة الصحية البسيطة: التغذية، النوم، الرياضة، والأعراض الخفيفة.\nاكتب سؤالك.\n⚠️ معلوماتي عامة ولا تغني عن الطبيب. في الحالات الطارئة اتصل بالإسعاف فورًا.",
+      text: "أهلاً! 👋 أنا بوت للأسئلة الصحية البسيطة: التغذية، النوم، الرياضة، والأعراض الخفيفة.\nاكتب سؤالك، أو اضغط الزر لحجز موعد.\n⚠️ معلوماتي عامة ولا تغني عن الطبيب. في الحالات الطارئة اتصل بالإسعاف فورًا.",
+      reply_markup: { inline_keyboard: [[{ text: "📅 احجز موعد", callback_data: "book" }]] },
     });
     return;
   }
+
+  // booking flow first (names/phones never go to Gemini)
+  if (await booking.onMessage(msg)) return;
+  if (!msg.text) return;
 
   await tg("sendChatAction", { chat_id: chatId, action: "typing" });
   let reply;
@@ -145,13 +157,25 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, async () => {
   console.log(`Listening on ${PORT}`);
+  console.log(google.enabled
+    ? `Booking enabled (service account ${google.serviceAccountEmail})`
+    : "Booking disabled: set GOOGLE_SERVICE_ACCOUNT_JSON, GOOGLE_CALENDAR_ID, GOOGLE_SHEET_ID");
   if (BASE_URL) {
     const r = await tg("setWebhook", {
       url: `${BASE_URL}/telegram`,
       secret_token: SECRET,
-      allowed_updates: ["message"],
+      allowed_updates: ["message", "callback_query"],
     });
     console.log("setWebhook:", JSON.stringify(r));
+    await tg("setMyCommands", { commands: [
+      { command: "start", description: "البداية" },
+      { command: "book", description: "حجز موعد" },
+      { command: "cancel", description: "إلغاء الحجز الجاري" },
+    ] });
+    // Keep-alive: ping our own public URL so the free instance doesn't sleep after 15 min idle.
+    if (process.env.KEEP_ALIVE !== "0") {
+      setInterval(() => fetch(`${BASE_URL}/health`).catch(() => {}), 10 * 60 * 1000);
+    }
   } else {
     console.warn("RENDER_EXTERNAL_URL not set; webhook not registered");
   }
