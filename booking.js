@@ -107,6 +107,11 @@ const bookingIdFor = (chatId, date, time) =>
 function chunk(arr, n) { const o = []; for (let i = 0; i < arr.length; i += n) o.push(arr.slice(i, i + n)); return o; }
 const CANCEL_BTN = { text: "❌ إلغاء", callback_data: "x" };
 
+// Trigger words for the interactive booking flow. NOTE: JS \b does not work with Arabic letters,
+// so we match short messages that contain a booking keyword instead.
+const BOOK_WORDS = /(حجز|احجز|أحجز|نحجز|حجوزات|موعد|مواعيد|rendez[\s-]?vous|rdv|réserv|reserv|book|appointment)/i;
+const BOOK_RE = { test: (t) => t.length <= 40 && !t.startsWith("/") && BOOK_WORDS.test(t) };
+
 function makeHandlers(tg) {
   const say = (chat_id, text, extra = {}) => tg("sendMessage", { chat_id, text, ...extra });
 
@@ -175,7 +180,7 @@ function makeHandlers(tg) {
   async function onMessage(msg) {
     const chatId = msg.chat.id;
     const text = (msg.text || "").trim();
-    if (/^\/book\b/i.test(text) || /^(احجز|حجز|موعد|book)\b/i.test(text)) { await start(chatId); return true; }
+    if (/^\/book(@\w+)?$/i.test(text) || BOOK_RE.test(text)) { await start(chatId); return true; }
     if (!g.enabled) return false;
 
     let s;
