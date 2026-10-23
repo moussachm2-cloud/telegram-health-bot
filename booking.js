@@ -165,13 +165,22 @@ function makeHandlers(tg) {
         const s0 = localToUtc(s.date, s.time);
         const busy = await g.busyIntervals(new Date(s0).toISOString(), new Date(s0 + SLOT * 60000).toISOString());
         if (busy.length) return "taken";
-        if (existing) await g.reviveEvent(id, event);
-        else await g.createEvent(id, event);
       }
+      // 1) Google Sheet FIRST — if this fails, the booking is NOT confirmed (error propagates).
+      const nowP = localParts(Date.now());
       await g.addBooking([
-        id, isoWithOffset(localDate(Date.now()), `${localParts(Date.now()).hour}:${localParts(Date.now()).minute}`),
+        id, isoWithOffset(localDate(Date.now()), `${nowP.hour}:${nowP.minute}`),
         s.name, s.phone, s.date, s.time, SLOT, String(chatId), from.username || "", "confirmed", id,
       ]);
+      console.log(`Booking saved to Sheet: ${id} ${s.date} ${s.time}`);
+      // 2) Calendar SECOND — a failure here is logged but does not cancel the booking.
+      try {
+        if (existing && existing.status === "cancelled") await g.reviveEvent(id, event);
+        else if (!existing) await g.createEvent(id, event);
+        console.log(`Booking added to Calendar: ${id}`);
+      } catch (e) {
+        console.error(`CALENDAR WRITE FAILED for booking ${id} (saved in Sheet):`, e.message);
+      }
       return "ok";
     });
   }
@@ -256,13 +265,13 @@ function makeHandlers(tg) {
         await setState(chatId, null);
         return tg("editMessageText", {
           chat_id: chatId, message_id: msgId,
-          text: `✅ تم تأكيد حجزك!\n👤 ${s.name}\n📅 ${dayLabel(s.date)} — 🕐 ${s.time}\nنراك في الموعد.`,
+          text: `✅ تم الحجز بنجاح يا ${s.name}!\n\n📅 اليوم: ${dayLabel(s.date)}\n🕐 الساعة: ${s.time}\n📱 الهاتف: ${s.phone}\n\nشكرًا لثقتك بنا 🌷 نتمنى لك دوام الصحة والعافية، ونسعد برؤيتك في موعدك.\nإذا احتجت أي تغيير، راسلنا هنا.`,
         });
       }
       // stale/duplicate button press
     } catch (e) {
-      console.error("booking callback:", e.message);
-      return say(chatId, "حدث خطأ مؤقت أثناء الحجز. حاول مرة أخرى بعد قليل 🙏");
+      console.error("booking callback FAILED (not confirmed to user):", e.stack || e.message);
+      return say(chatId, "عذرًا، لم يتم تسجيل حجزك بسبب خطأ مؤقت. حاول مرة أخرى بعد قليل 🙏");
     }
   }
 
