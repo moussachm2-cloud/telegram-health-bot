@@ -169,8 +169,8 @@ function makeHandlers(tg) {
       // 1) Google Sheet FIRST — if this fails, the booking is NOT confirmed (error propagates).
       const nowP = localParts(Date.now());
       await g.addBooking([
-        id, isoWithOffset(localDate(Date.now()), `${nowP.hour}:${nowP.minute}`),
-        s.name, s.phone, s.date, s.time, SLOT, String(chatId), from.username || "", "confirmed", id,
+        id, `${localDate(Date.now())} ${nowP.hour}:${nowP.minute}`,
+        s.name, s.phone, s.date, s.time, SLOT, String(chatId), from.username ? "@" + from.username : "", "مؤكد", id, "",
       ]);
       console.log(`Booking saved to Sheet: ${id} ${s.date} ${s.time}`);
       // 2) Calendar SECOND — a failure here is logged but does not cancel the booking.

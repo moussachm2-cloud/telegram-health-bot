@@ -103,7 +103,7 @@ async function reviveEvent(eventId, event) {
 const sheetBase = () => `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}`;
 const BOOKINGS = "Bookings";
 const STATE = "State";
-const BOOKING_HEADERS = ["Booking ID", "Created at", "Name", "Phone", "Date", "Time", "Duration (min)", "Telegram chat", "Telegram username", "Status", "Calendar event"];
+const BOOKING_HEADERS = ["رقم الحجز", "وقت التسجيل", "الاسم", "الهاتف", "تاريخ الموعد", "الساعة", "المدة (دقيقة)", "Telegram chat", "حساب Telegram", "الحالة", "Calendar event", "ملاحظات"];
 let tabsReady = false;
 
 async function ensureTabs() {
@@ -118,7 +118,7 @@ async function ensureTabs() {
     });
     if (!r.ok) throw new Error(`addSheet ${r.status}: ${JSON.stringify(r.data).slice(0, 300)}`);
   }
-  if (add.includes(BOOKINGS)) await putRange(`${BOOKINGS}!A1:K1`, [BOOKING_HEADERS]);
+  if (add.includes(BOOKINGS)) await putRange(`${BOOKINGS}!A1:L1`, [BOOKING_HEADERS]);
   if (add.includes(STATE)) await putRange(`${STATE}!A1:C1`, [["chat_id", "state_json", "updated_at"]]);
   tabsReady = true;
 }
@@ -134,13 +134,14 @@ async function putRange(range, values) {
   if (!r.ok) throw new Error(`Sheet put ${r.status}: ${JSON.stringify(r.data).slice(0, 300)}`);
 }
 
+// Write to the first empty row (by column A). We don't use the Sheets "append" API because once the
+// sheet is formatted (filter/banding/hidden columns) Google may fail to detect the table and insert at row 1.
 async function appendRow(tab, row) {
-  const r = await gapi("POST",
-    `${sheetBase()}/values/${encodeURIComponent(tab + "!A1")}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
-    { values: [row] });
-  if (!r.ok) throw new Error(`Sheet append ${r.status}: ${JSON.stringify(r.data).slice(0, 300)}`);
-  const m = /!A(\d+)/.exec(r.data.updates?.updatedRange || "");
-  return m ? Number(m[1]) : null;
+  const colA = await getRange(`${tab}!A:A`);
+  const n = colA.length + 1;
+  const lastCol = String.fromCharCode(64 + row.length);
+  await putRange(`${tab}!A${n}:${lastCol}${n}`, [row]);
+  return n;
 }
 
 async function bookingExists(bookingId) {
