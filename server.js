@@ -6,8 +6,17 @@ const crypto = require("crypto");
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const GEMINI_KEY = process.env.GEMINI_API_KEY;
-const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
-const SECRET = process.env.WEBHOOK_SECRET || crypto.randomBytes(16).toString("hex");
+// Try the configured model first, then fall back (models get retired or overloaded).
+const MODELS = [...new Set([
+  process.env.GEMINI_MODEL,
+  "gemini-3.8-flash",
+  "gemini-flash-lite-latest",
+  "gemini-3.5-flash",
+  "gemini-flash-latest",
+].filter(Boolean))];
+// Telegram only allows A-Z a-z 0-9 _ - in secret_token; hash whatever we got into hex.
+const RAW_SECRET = process.env.WEBHOOK_SECRET || crypto.randomBytes(16).toString("hex");
+const SECRET = crypto.createHash("sha256").update(RAW_SECRET).digest("hex");
 const BASE_URL = process.env.RENDER_EXTERNAL_URL;
 const PORT = process.env.PORT || 10000;
 
@@ -46,21 +55,40 @@ async function askGemini(chatId, userText) {
     role: m.role,
     parts: [{ text: m.text }],
   }));
-  const r = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_KEY}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-        contents,
-        generationConfig: { temperature: 0.4, maxOutputTokens: 800 },
-      }),
+  const body = JSON.stringify({
+    systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+    contents,
+    generationConfig: { temperature: 0.4, maxOutputTokens: 4096 },
+  });
+  let text = null;
+  let lastErr = "";
+  for (const model of MODELS) {
+    for (let attempt = 0; attempt < 2 && !text; attempt++) {
+      try {
+        const r = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_KEY}`,
+          { method: "POST", headers: { "Content-Type": "application/json" }, body }
+        );
+        const j = await r.json();
+        text = j?.candidates?.[0]?.content?.parts
+          ?.filter((p) => p.text && !p.thought)
+          .map((p) => p.text)
+          .join("")
+          .trim() || null;
+        if (!text) {
+          lastErr = `${model} ${r.status}: ${JSON.stringify(j).slice(0, 300)}`;
+          console.error("Gemini failed:", lastErr);
+          if (r.status === 404 || r.status === 400 || r.status === 403) break; // don't retry this model
+          await new Promise((s) => setTimeout(s, 1500));
+        }
+      } catch (e) {
+        lastErr = `${model}: ${e.message}`;
+        console.error("Gemini fetch error:", lastErr);
+      }
     }
-  );
-  const j = await r.json();
-  const text = j?.candidates?.[0]?.content?.parts?.map((p) => p.text).join("").trim();
-  if (!text) throw new Error("Gemini error: " + JSON.stringify(j).slice(0, 500));
+    if (text) break;
+  }
+  if (!text) throw new Error("All Gemini models failed. Last: " + lastErr);
   h.push({ role: "user", text: userText }, { role: "model", text });
   history.set(chatId, h.slice(-10));
   return text;
