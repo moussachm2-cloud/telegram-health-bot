@@ -18,9 +18,15 @@ function loadServiceAccount() {
 }
 
 const SA = loadServiceAccount();
-const CALENDAR_ID = process.env.GOOGLE_CALENDAR_ID;
-const SHEET_ID = process.env.GOOGLE_SHEET_ID;
-const enabled = Boolean(SA && CALENDAR_ID && SHEET_ID);
+// GOOGLE_CALENDAR_ID is optional: when empty (or "auto"), the service account creates its OWN
+// calendar and shares it with GOOGLE_OWNER_EMAIL, so the owner never has to touch Calendar sharing.
+const RAW_CAL = (process.env.GOOGLE_CALENDAR_ID || "").trim();
+const AUTO_CAL = !RAW_CAL || RAW_CAL.toLowerCase() === "auto";
+const OWNER_EMAIL = (process.env.GOOGLE_OWNER_EMAIL || "").trim();
+const AUTO_CAL_NAME = process.env.AUTO_CALENDAR_NAME || "حجوزات البوت";
+let CALENDAR_ID = AUTO_CAL ? null : RAW_CAL;
+const SHEET_ID = (process.env.GOOGLE_SHEET_ID || "").trim();
+const enabled = Boolean(SA && SHEET_ID);
 
 let cachedToken = null; // { token, exp }
 
@@ -65,9 +71,48 @@ async function gapi(method, url, body) {
 }
 
 // ---------- Calendar ----------
+let calReady = null;
+function ensureCalendar() {
+  if (CALENDAR_ID && !AUTO_CAL) return Promise.resolve(CALENDAR_ID);
+  if (!calReady) calReady = setupAutoCalendar().catch((e) => { calReady = null; throw e; });
+  return calReady;
+}
+
+async function setupAutoCalendar() {
+  // 1) reuse the calendar we created before (idempotent across restarts)
+  const list = await gapi("GET", "https://www.googleapis.com/calendar/v3/users/me/calendarList?maxResults=250");
+  if (!list.ok) throw new Error(`calendarList ${list.status}: ${JSON.stringify(list.data).slice(0, 300)}`);
+  let cal = (list.data.items || []).find((c) => c.summary === AUTO_CAL_NAME && c.accessRole === "owner");
+  // 2) otherwise create it
+  if (!cal) {
+    const tz = process.env.TIMEZONE || "Africa/Algiers";
+    const r = await gapi("POST", "https://www.googleapis.com/calendar/v3/calendars", { summary: AUTO_CAL_NAME, timeZone: tz });
+    if (!r.ok) throw new Error(`calendar create ${r.status}: ${JSON.stringify(r.data).slice(0, 300)}`);
+    cal = r.data;
+    console.log(`Auto calendar created: ${cal.id}`);
+  }
+  CALENDAR_ID = cal.id;
+  // 3) share it with the owner (bot -> owner, the reverse direction of manual sharing)
+  if (OWNER_EMAIL) {
+    const base = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(CALENDAR_ID)}/acl`;
+    const acl = await gapi("GET", base);
+    const has = acl.ok && (acl.data.items || []).some((a) => a.scope?.value?.toLowerCase() === OWNER_EMAIL.toLowerCase());
+    if (!has) {
+      const r = await gapi("POST", `${base}?sendNotifications=true`, { role: "owner", scope: { type: "user", value: OWNER_EMAIL } });
+      if (!r.ok) throw new Error(`calendar share ${r.status}: ${JSON.stringify(r.data).slice(0, 300)}`);
+      console.log(`Auto calendar shared with ${OWNER_EMAIL}`);
+    }
+  } else {
+    console.warn("GOOGLE_OWNER_EMAIL not set: auto calendar is not shared with anyone");
+  }
+  console.log(`Calendar ready (auto): ${CALENDAR_ID} | open: https://calendar.google.com/calendar/r?cid=${encodeURIComponent(CALENDAR_ID)}`);
+  return CALENDAR_ID;
+}
+
 const calBase = () => `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(CALENDAR_ID)}`;
 
 async function busyIntervals(timeMinIso, timeMaxIso) {
+  await ensureCalendar();
   const r = await gapi("POST", "https://www.googleapis.com/calendar/v3/freeBusy", {
     timeMin: timeMinIso, timeMax: timeMaxIso, items: [{ id: CALENDAR_ID }],
   });
@@ -79,6 +124,7 @@ async function busyIntervals(timeMinIso, timeMaxIso) {
 
 // Creates the event with a deterministic id. Returns {created:true} or {created:false, existed:true}.
 async function createEvent(eventId, event) {
+  await ensureCalendar();
   const r = await gapi("POST", `${calBase()}/events`, { id: eventId, ...event });
   if (r.ok) return { created: true, id: r.data.id, link: r.data.htmlLink };
   if (r.status === 409) return { created: false, existed: true, id: eventId };
@@ -86,6 +132,7 @@ async function createEvent(eventId, event) {
 }
 
 async function getEvent(eventId) {
+  await ensureCalendar();
   const r = await gapi("GET", `${calBase()}/events/${eventId}`);
   if (r.status === 404 || r.status === 410) return null;
   if (!r.ok) throw new Error(`Calendar get ${r.status}: ${JSON.stringify(r.data).slice(0, 300)}`);
@@ -94,6 +141,7 @@ async function getEvent(eventId) {
 
 // Re-activate a previously deleted event that reuses the same deterministic id.
 async function reviveEvent(eventId, event) {
+  await ensureCalendar();
   const r = await gapi("PUT", `${calBase()}/events/${eventId}`, { ...event, status: "confirmed" });
   if (!r.ok) throw new Error(`Calendar update ${r.status}: ${JSON.stringify(r.data).slice(0, 300)}`);
   return { created: true, id: r.data.id };
@@ -183,6 +231,6 @@ async function saveState(chatId, state) {
 }
 
 module.exports = {
-  enabled, serviceAccountEmail: SA?.client_email || null,
+  enabled, serviceAccountEmail: SA?.client_email || null, autoCalendar: AUTO_CAL, ensureCalendar,
   busyIntervals, createEvent, getEvent, reviveEvent, bookingExists, addBooking, loadState, saveState, ensureTabs,
 };

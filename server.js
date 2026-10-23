@@ -159,7 +159,15 @@ server.listen(PORT, async () => {
   console.log(`Listening on ${PORT}`);
   console.log(google.enabled
     ? `Booking enabled (service account ${google.serviceAccountEmail})`
-    : "Booking disabled: set GOOGLE_SERVICE_ACCOUNT_JSON, GOOGLE_CALENDAR_ID, GOOGLE_SHEET_ID");
+    : "Booking disabled: set GOOGLE_SERVICE_ACCOUNT_JSON and GOOGLE_SHEET_ID (GOOGLE_CALENDAR_ID optional)");
+  if (google.enabled) {
+    google.ensureCalendar()
+      .then((id) => console.log(`Calendar check OK: ${id}`))
+      .catch((e) => console.error("Calendar setup error:", e.message));
+    google.ensureTabs()
+      .then(() => console.log("Sheet check OK"))
+      .catch((e) => console.error("Sheet setup error:", e.message));
+  }
   if (BASE_URL) {
     const r = await tg("setWebhook", {
       url: `${BASE_URL}/telegram`,
