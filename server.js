@@ -81,7 +81,7 @@ async function askGemini(chatId, userText) {
         if (!text) {
           lastErr = `${model} ${r.status}: ${JSON.stringify(j).slice(0, 300)}`;
           console.error("Gemini failed:", lastErr);
-          if (r.status === 404 || r.status === 400 || r.status === 403) break; // don't retry this model
+          if ([400, 403, 404, 429].includes(r.status)) break; // quota/unavailable: go to next model now
           await new Promise((s) => setTimeout(s, 1500));
         }
       } catch (e) {
